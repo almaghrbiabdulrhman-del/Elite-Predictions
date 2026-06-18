@@ -5,7 +5,7 @@
    عبر GitHub Actions (deploy.yml).
    ════════════════════════════════════════════════════════════════ */
 
-const RAW_VERSION = '__SW_VERSION__';
+const RAW_VERSION = '1781813532';
 const VERSION = (RAW_VERSION === '__SW_VERSION__') ? 'dev-local' : RAW_VERSION;
 const CACHE_NAME = `elite-v${VERSION}`;
 

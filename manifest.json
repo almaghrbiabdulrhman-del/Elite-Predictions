@@ -2,12 +2,15 @@
   "name": "نُخبة - توقعات كرة القدم",
   "short_name": "نُخبة",
   "description": "منصة توقعات الدوري الإنجليزي الممتاز الاحترافية",
-  "version": "1",
+  "version": "1781813532",
   "start_url": "/?source=pwa",
   "scope": "/",
   "id": "/",
   "display": "standalone",
-  "display_override": ["standalone", "minimal-ui"],
+  "display_override": [
+    "standalone",
+    "minimal-ui"
+  ],
   "background_color": "#060D0A",
   "theme_color": "#060D0A",
   "orientation": "portrait",
@@ -39,6 +42,9 @@
       "purpose": "maskable"
     }
   ],
-  "categories": ["sports", "games"],
+  "categories": [
+    "sports",
+    "games"
+  ],
   "screenshots": []
 }
