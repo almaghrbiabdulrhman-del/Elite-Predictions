@@ -1,0 +1,183 @@
+<!-- ════════════════════════════════════════════════════════════
+     نُخبة — نظام التحديث التلقائي + إدارة الجلسة
+     الصق هذا الكود قبل </body> مباشرةً في index.html
+     ════════════════════════════════════════════════════════════ -->
+<script>
+(function () {
+  'use strict';
+
+  /* ══════════════════════════════════════════════════════════════
+     1. SERVICE WORKER — التسجيل + كشف التحديث التلقائي
+     ══════════════════════════════════════════════════════════════ */
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+
+      navigator.serviceWorker.register('/sw.js', { scope: '/' })
+        .then(function (reg) {
+
+          /* ── كشف التحديث فور وصوله ── */
+          reg.addEventListener('updatefound', function () {
+            var newSW = reg.installing;
+            if (!newSW) return;
+
+            newSW.addEventListener('statechange', function () {
+              /* النسخة الجديدة جاهزة للتفعيل */
+              if (newSW.state === 'installed' && navigator.serviceWorker.controller) {
+                /* أبلغ الـ SW بالتفعيل الفوري */
+                newSW.postMessage({ type: 'SKIP_WAITING' });
+              }
+            });
+          });
+
+          /* ── عند تغيير الـ controller (SW جديد سيطر) → reload ── */
+          var refreshing = false;
+          navigator.serviceWorker.addEventListener('controllerchange', function () {
+            if (refreshing) return;
+            refreshing = true;
+            window.location.reload();
+          });
+
+          /* ── فحص دوري كل دقيقتين ── */
+          setInterval(function () {
+            reg.update().catch(function () {});
+          }, 120000);
+
+          /* ── فحص فوري عند عودة التطبيق من الخلفية ── */
+          document.addEventListener('visibilitychange', function () {
+            if (document.visibilityState === 'visible') {
+              reg.update().catch(function () {});
+            }
+          });
+
+        })
+        .catch(function (err) {
+          if (window.DEBUG_MODE) console.warn('[SW] Registration failed:', err);
+        });
+    });
+  }
+
+  /* ══════════════════════════════════════════════════════════════
+     2. SUPABASE SESSION — إبقاء الجلسة حية بدون تسجيل خروج تلقائي
+     ══════════════════════════════════════════════════════════════
+     يعمل مع Supabase JS v2 الذي يخزن الجلسة في localStorage
+     تلقائياً ويجددها عبر Refresh Token.
+     الكود أدناه يضمن:
+     - عدم انتهاء الجلسة عند إغلاق التطبيق وإعادة فتحه
+     - تجديد التوكن تلقائياً قبل انتهاء صلاحيته
+     - مزامنة الجلسة بين tabs متعددة
+  */
+
+  /* ننتظر تهيئة Supabase — يُشغَّل بعد تحميل supabase.min.js */
+  function initSessionManager() {
+    /* التأكد من وجود supabase client */
+    if (typeof window.supabase === 'undefined' && typeof window.__supabaseClient === 'undefined') {
+      setTimeout(initSessionManager, 200);
+      return;
+    }
+
+    var client = window.__supabaseClient || window.supabase;
+    if (!client) return;
+
+    /* ── مراقبة تغييرات حالة المصادقة ── */
+    client.auth.onAuthStateChange(function (event, session) {
+      if (window.DEBUG_MODE) {
+        console.log('[Auth]', event, session ? '✅ session active' : '❌ no session');
+      }
+
+      /* SIGNED_OUT الحقيقي: المستخدم ضغط زر تسجيل الخروج */
+      if (event === 'SIGNED_OUT') {
+        /* امسح أي بيانات محلية إضافية هنا إذا احتجت */
+        return;
+      }
+
+      /* TOKEN_REFRESHED: تجديد تلقائي ناجح — لا تفعل شيئاً */
+      if (event === 'TOKEN_REFRESHED') {
+        if (window.DEBUG_MODE) console.log('[Auth] Token refreshed successfully');
+        return;
+      }
+    });
+
+    /* ── تجديد استباقي: فحص الجلسة عند عودة التطبيق ── */
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'visible') {
+        client.auth.getSession().then(function (res) {
+          if (res.data?.session) {
+            /* الجلسة موجودة — Supabase يجددها تلقائياً إذا قاربت على الانتهاء */
+            if (window.DEBUG_MODE) console.log('[Auth] Session valid on resume');
+          }
+        });
+      }
+    });
+
+    /* ── مزامنة الجلسة بين tabs (Storage Event) ── */
+    window.addEventListener('storage', function (e) {
+      if (e.key && e.key.includes('supabase') && e.key.includes('auth')) {
+        client.auth.getSession().catch(function () {});
+      }
+    });
+  }
+
+  /* تشغيل مدير الجلسة بعد تحميل الصفحة */
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initSessionManager);
+  } else {
+    initSessionManager();
+  }
+
+  /* ══════════════════════════════════════════════════════════════
+     3. withRetry — غلاف لكل استدعاءات Supabase
+        يمنع Timeout ويعيد المحاولة تلقائياً
+     ══════════════════════════════════════════════════════════════ */
+  window.withRetry = function (fn, maxRetries, delayMs, silent, timeoutMs) {
+    maxRetries = maxRetries || 3;
+    delayMs    = delayMs    || 1000;
+    silent     = silent     || false;
+    timeoutMs  = timeoutMs  || 30000;
+
+    function attempt(retriesLeft) {
+      var timeoutId;
+      var timedOut = false;
+
+      var timeoutPromise = new Promise(function (_, reject) {
+        timeoutId = setTimeout(function () {
+          timedOut = true;
+          reject(new Error('REQUEST_TIMEOUT'));
+        }, timeoutMs);
+      });
+
+      var fnPromise = Promise.resolve().then(fn);
+
+      return Promise.race([fnPromise, timeoutPromise])
+        .then(function (result) {
+          clearTimeout(timeoutId);
+          return result;
+        })
+        .catch(function (err) {
+          clearTimeout(timeoutId);
+
+          var isRetryable =
+            timedOut ||
+            err.message === 'REQUEST_TIMEOUT' ||
+            err.message === 'Failed to fetch' ||
+            (err.status >= 500 && err.status < 600) ||
+            err.code === 'NETWORK_ERROR';
+
+          if (isRetryable && retriesLeft > 0) {
+            if (!silent && window.DEBUG_MODE) {
+              console.warn('[withRetry] Retrying... (' + retriesLeft + ' left)', err.message);
+            }
+            return new Promise(function (resolve) {
+              setTimeout(function () { resolve(attempt(retriesLeft - 1)); }, delayMs);
+            });
+          }
+
+          throw err;
+        });
+    }
+
+    return attempt(maxRetries);
+  };
+
+})();
+</script>
+
