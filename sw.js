@@ -1,36 +1,23 @@
 /* ════════════════════════════════════════════════════════════════
-   نُخبة — Service Worker (v5 — Fixed)
-   ----------------------------------------------------------------
-   الإصلاحات:
-   • منع حلقة إعادة التحميل اللانهائية (لا skipWaiting تلقائي).
-   • عدم تخزين index.html / التنقل في الكاش إطلاقاً → دائماً أحدث نسخة
-     من الشبكة، والكاش يُستخدم فقط عند انقطاع الإنترنت (offline fallback).
-   • تجاهل كامل لطلبات Supabase / Auth / Workers / REST.
-   • التحديث يتم عبر رسالة SKIP_WAITING من الصفحة فقط (تحكّم نظيف).
-   • SW_VERSION يُستبدل تلقائياً عند كل نشر بواسطة CI (deploy.yml).
+   نُخبة — Service Worker — النسخة النهائية
+   ────────────────────────────────────────────────────────────────
+   __SW_VERSION__ يُستبدل تلقائياً بـ timestamp عند كل Deploy
+   عبر GitHub Actions (deploy.yml).
    ════════════════════════════════════════════════════════════════ */
 
-// __SW_VERSION__ يُستبدل تلقائياً برقم البناء عبر GitHub Actions (deploy.yml).
-// لو لم يُستبدل (تطوير محلي) نستخدم رقماً ثابتاً احتياطياً.
 const RAW_VERSION = '__SW_VERSION__';
-const VERSION = RAW_VERSION.indexOf('__SW_VERSION') === 0 ? 'dev-1781708737' : RAW_VERSION;
-const CACHE_NAME = `elite-predictions-${VERSION}`;
-
-// لا نُخزّن أي شيء مسبقاً — التطبيق صفحة واحدة (SPA) تُجلب من الشبكة.
-const STATIC_ASSETS = [];
+const VERSION = (RAW_VERSION === '__SW_VERSION__') ? 'dev-local' : RAW_VERSION;
+const CACHE_NAME = `elite-v${VERSION}`;
 
 /* ── INSTALL ──────────────────────────────────────────────────────
-   لا نستدعي skipWaiting() هنا. ننتظر رسالة SKIP_WAITING من الصفحة
-   حتى لا يحدث تبديل مفاجئ للـ controller يؤدي إلى reload loop. */
+   لا skipWaiting() هنا — يمنع التفعيل المفاجئ وحلقة الـ reload. */
 self.addEventListener('install', event => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => cache.addAll(STATIC_ASSETS)).catch(() => {})
-  );
+  event.waitUntil(caches.open(CACHE_NAME).catch(() => {}));
+  // لا skipWaiting — ننتظر رسالة SKIP_WAITING من الصفحة
 });
 
 /* ── ACTIVATE ─────────────────────────────────────────────────────
-   نحذف الكاشات القديمة فقط. لا نُرسل SW_UPDATED من هنا (كان يسبب
-   حلقة reload). الإبلاغ بالتحديث يتم في الصفحة عبر updatefound. */
+   حذف كل الكاشات القديمة، ثم claim الكلاينتس. */
 self.addEventListener('activate', event => {
   event.waitUntil(
     caches.keys()
@@ -42,62 +29,65 @@ self.addEventListener('activate', event => {
 });
 
 /* ── MESSAGE ──────────────────────────────────────────────────────
-   الصفحة ترسل {type:'SKIP_WAITING'} عندما يوافق المستخدم/منطق التحديث
-   على تفعيل النسخة الجديدة. عندها فقط نُفعّلها فوراً. */
+   الصفحة ترسل SKIP_WAITING عند اكتشاف إصدار جديد.
+   بعدها يتم reload نظيف. */
 self.addEventListener('message', event => {
-  if (event.data && event.data.type === 'SKIP_WAITING') {
+  if (event.data?.type === 'SKIP_WAITING') {
     self.skipWaiting();
   }
 });
 
-/* ── OFFLINE FALLBACK PAGE ──────────────────────────────────────────
-   تُستخدم فقط عند فشل الشبكة والكاش معاً (مثل أول زيارة بدون اتصال).
-   تمنع ظهور شاشة خطأ النظام الافتراضية (No internet connection). */
-const OFFLINE_HTML = `<!DOCTYPE html>
-<html lang="ar" dir="rtl"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<title>نُخبة — لا يوجد اتصال</title>
-<style>
-  *{margin:0;padding:0;box-sizing:border-box;}
-  body{
-    background:#0a1410;color:#e8f5ee;
-    font-family:'Segoe UI',Tahoma,Arial,sans-serif;
-    min-height:100vh;display:flex;flex-direction:column;
-    align-items:center;justify-content:center;gap:18px;padding:24px;text-align:center;
-  }
-  .icon{font-size:56px;opacity:.85;}
-  h1{font-size:20px;color:#3ddc84;font-weight:700;}
-  p{font-size:15px;color:#9fb8ac;max-width:320px;line-height:1.6;}
-  button{
-    margin-top:8px;padding:14px 38px;border:none;border-radius:14px;
-    background:linear-gradient(135deg,#2ecc71,#27ae60);color:#fff;
-    font-size:16px;font-weight:700;cursor:pointer;
-  }
-  button:active{opacity:.85;}
-</style></head>
-<body>
-  <div class="icon">📡</div>
-  <h1>لا يوجد اتصال بالإنترنت</h1>
-  <p>تحقق من اتصالك بالشبكة ثم حاول مجدداً. سيتم إعادة تحميل التطبيق تلقائياً عند استعادة الاتصال.</p>
-  <button onclick="location.reload()">إعادة المحاولة</button>
-  <script>
-    window.addEventListener('online', () => location.reload());
-  </script>
-</body></html>`;
-
-function offlineResponse(){
-  return new Response(OFFLINE_HTML, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+/* ── FETCH TIMEOUT ────────────────────────────────────────────────
+   مهلة 7 ثوانٍ — تمنع التعليق اللانهائي على شبكة بطيئة. */
+function fetchWithTimeout(request, ms = 7000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  return fetch(request, { signal: ctrl.signal })
+    .finally(() => clearTimeout(timer));
 }
 
-/* مهلة صريحة على fetch — لو الشبكة "متصلة" لكن بطيئة جداً (انتظار بلا نهاية)،
-   ننتقل للكاش/الـ fallback بسرعة بدل تعليق الشاشة. */
-function fetchWithTimeout(request, ms){
-  return new Promise((resolve, reject) => {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => { ctrl.abort(); reject(new Error('sw_fetch_timeout')); }, ms);
-    fetch(request, { cache: 'no-store', signal: ctrl.signal })
-      .then(res => { clearTimeout(t); resolve(res); })
-      .catch(err => { clearTimeout(t); reject(err); });
+/* ── OFFLINE FALLBACK ─────────────────────────────────────────────
+   صفحة احتياطية عند انقطاع الإنترنت تماماً. */
+const OFFLINE_HTML = `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#060D0A">
+<title>نُخبة — لا يوجد اتصال</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  background:#060D0A;color:#e8f5ee;
+  font-family:Cairo,system-ui,sans-serif;
+  min-height:100vh;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  gap:20px;padding:24px;text-align:center
+}
+.icon{font-size:60px}
+h1{font-size:20px;color:#22C55E;font-weight:900}
+p{font-size:14px;color:#9fb8ac;max-width:300px;line-height:1.7}
+button{
+  padding:14px 40px;border:none;border-radius:14px;
+  background:linear-gradient(135deg,#22C55E,#15803D);
+  color:#fff;font-size:16px;font-weight:900;
+  cursor:pointer;font-family:inherit
+}
+</style>
+</head>
+<body>
+  <div class="icon">📡</div>
+  <h1>لا يوجد اتصال</h1>
+  <p>تحقق من اتصالك بالإنترنت ثم حاول مجدداً</p>
+  <button onclick="location.reload()">إعادة المحاولة</button>
+  <script>window.addEventListener('online',()=>location.reload())</script>
+</body>
+</html>`;
+
+function offlineResponse() {
+  return new Response(OFFLINE_HTML, {
+    status: 200,
+    headers: { 'Content-Type': 'text/html; charset=utf-8' }
   });
 }
 
@@ -106,9 +96,9 @@ self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
 
   let url;
-  try { url = new URL(event.request.url); } catch (e) { return; }
+  try { url = new URL(event.request.url); } catch { return; }
 
-  // 1) Supabase / Auth / Workers / REST / RPC — تجاهل تام، لا cache إطلاقاً.
+  /* 1) Supabase / Auth / API — تجاهل تام، المتصفح يتعامل معها مباشرة */
   if (
     url.hostname.includes('supabase.co') ||
     url.hostname.includes('supabase.in') ||
@@ -121,28 +111,29 @@ self.addEventListener('fetch', event => {
     url.search.includes('apikey') ||
     event.request.headers.get('authorization')
   ) {
-    return; // اترك المتصفح يتعامل معها مباشرة (لا respondWith).
+    return; // لا respondWith — المتصفح يرسلها مباشرة
   }
 
-  // 2) طلبات التنقل / HTML / sw / manifest — Network First بلا تخزين دائم.
-  //    لا نُخزّن index.html أبداً حتى لا تظهر نسخة قديمة بعد النشر على Vercel.
-  const isNavigation =
+  /* 2) التنقل / HTML / sw / manifest — Network First دائماً
+     لا نخزن index.html لضمان وصول آخر نسخة دائماً */
+  const isNav =
     event.request.mode === 'navigate' ||
     url.pathname === '/' ||
     url.pathname.endsWith('.html') ||
-    url.pathname.endsWith('/sw.js') ||
-    url.pathname.endsWith('/manifest.json');
+    url.pathname === '/sw.js' ||
+    url.pathname === '/manifest.json';
 
-  if (isNavigation) {
+  if (isNav) {
     event.respondWith(
       fetchWithTimeout(event.request, 8000)
-        .then(response => {
-          // نحتفظ بنسخة احتياطية واحدة للوضع دون اتصال فقط.
-          if (response && response.ok && (url.pathname === '/' || event.request.mode === 'navigate')) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then(cache => cache.put('/index.html', clone)).catch(() => {});
+        .then(res => {
+          // نحتفظ بنسخة واحدة احتياطية للـ offline فقط
+          if (res.ok && event.request.mode === 'navigate') {
+            caches.open(CACHE_NAME)
+              .then(c => c.put('/index.html', res.clone()))
+              .catch(() => {});
           }
-          return response;
+          return res;
         })
         .catch(() =>
           caches.match(event.request)
@@ -153,17 +144,17 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // 3) الأصول الثابتة (صور/خطوط/أيقونات) — Cache First.
+  /* 3) الأصول الثابتة (صور / أيقونات / خطوط) — Cache First */
   event.respondWith(
     caches.match(event.request).then(cached => {
       if (cached) return cached;
-      return fetch(event.request).then(response => {
-        if (response && response.status === 200 &&
-            (response.type === 'basic' || response.type === 'cors')) {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone)).catch(() => {});
+      return fetch(event.request).then(res => {
+        if (res?.ok && (res.type === 'basic' || res.type === 'cors')) {
+          caches.open(CACHE_NAME)
+            .then(c => c.put(event.request, res.clone()))
+            .catch(() => {});
         }
-        return response;
+        return res;
       }).catch(() => cached);
     })
   );
