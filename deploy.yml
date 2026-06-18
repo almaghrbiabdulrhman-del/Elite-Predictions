@@ -1,0 +1,87 @@
+name: Deploy to Vercel
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── 2. توليد Build Timestamp ─────────────────────────────────
+      - name: Generate build timestamp
+        id: ts
+        run: echo "TS=$(date +%s)" >> $GITHUB_OUTPUT
+
+      # ── 3. تحديث SW_VERSION في sw.js ────────────────────────────
+      - name: Inject SW_VERSION into sw.js
+        run: |
+          TS="${{ steps.ts.outputs.TS }}"
+          # استبدال __SW_VERSION__ أو أي قيمة سابقة
+          sed -i "s/const RAW_VERSION = '[^']*';/const RAW_VERSION = '${TS}';/" sw.js
+          echo "✅ SW_VERSION updated to: ${TS}"
+          grep "RAW_VERSION" sw.js
+
+      # ── 4. تحديث رقم الإصدار في manifest.json ──────────────────
+      - name: Bump manifest version
+        run: |
+          TS="${{ steps.ts.outputs.TS }}"
+          # نضيف أو نحدث حقل version في manifest.json
+          node -e "
+            const fs = require('fs');
+            const m = JSON.parse(fs.readFileSync('manifest.json','utf8'));
+            m.version = '${TS}';
+            fs.writeFileSync('manifest.json', JSON.stringify(m, null, 2));
+            console.log('✅ manifest version:', m.version);
+          "
+
+      # ── 5. تحديث رابط manifest في index.html ────────────────────
+      - name: Bump manifest cache-buster in index.html
+        run: |
+          TS="${{ steps.ts.outputs.TS }}"
+          # استبدال ?v=أي_رقم بـ ?v=TIMESTAMP الجديد
+          sed -i "s|manifest\.json?v=[0-9]*|manifest.json?v=${TS}|g" index.html
+          echo "✅ manifest link updated in index.html"
+          grep "manifest.json" index.html
+
+      # ── 6. Commit التغييرات ──────────────────────────────────────
+      - name: Commit updated files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add sw.js manifest.json index.html
+          git diff --staged --quiet && echo "No changes to commit" || git commit -m "chore: bump build version ${{ steps.ts.outputs.TS }} [skip ci]"
+
+      - name: Push changes
+        run: git push || echo "Nothing to push"
+
+      # ── 7. Trigger Vercel Deploy ─────────────────────────────────
+      - name: Trigger Vercel Deploy Hook
+        run: |
+          echo "🚀 Triggering Vercel deploy..."
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${{ secrets.VERCEL_DEPLOY_HOOK }}")
+          if [ "$RESPONSE" = "201" ] || [ "$RESPONSE" = "200" ]; then
+            echo "✅ Vercel deploy triggered successfully (HTTP $RESPONSE)"
+          else
+            echo "⚠️ Vercel responded with HTTP $RESPONSE"
+            exit 1
+          fi
+
+      # ── 8. انتظار وتأكيد النشر ───────────────────────────────────
+      - name: Wait for Vercel deployment
+        run: |
+          echo "⏳ Waiting 30s for Vercel to build..."
+          sleep 30
+          echo "✅ Done — check https://elite-predictions-bo7p.vercel.app"
+
